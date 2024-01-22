@@ -1,6 +1,3 @@
-# Compatibility layer between Python 2 and Python 3
-from __future__ import print_function
-
 from itertools import combinations
 from matplotlib import pyplot as plt
 from scipy import stats
@@ -64,7 +61,7 @@ def feature_normalize(dataset):
 
 
 def plot_axis(ax, x, y, title):
-    ax.plot(x, y, color='grey')
+    ax.plot(x, y)
     ax.set_title(title)
     ax.xaxis.set_visible(False)
     ax.set_ylim([min(y) - np.std(y), max(y) + np.std(y)])
@@ -168,74 +165,9 @@ class PersonLevelEvaluation(Callback):
         return np.array(aggregated_predictions), np.array(aggregated_true_labels)
 
 
-def train_and_evaluate(df_train, df_test, threshold):
-    # Reshape the training data into segments
-    # so that they can be processed by the network
-    x_data, y_data, person_ids = create_segments(df_train, TIME_PERIODS, STEP_DISTANCE)
-    print('x_data shape:', x_data.shape)
-    print('y_data shape: ', y_data.shape)
-
-    print("\n--- Create neural network model ---\n")
-    model_m = Sequential()
-    model_m.add(Reshape((TIME_PERIODS, N_FEATURES), input_shape=(INPUT_SHAPE,)))
-    model_m.add(Conv1D(100, 10, activation='relu', input_shape=(TIME_PERIODS, N_FEATURES)))
-    model_m.add(Conv1D(100, 10, activation='relu'))
-    model_m.add(MaxPooling1D(3))
-    model_m.add(Conv1D(160, 10, activation='relu'))
-    model_m.add(Conv1D(160, 10, activation='relu'))
-    model_m.add(GlobalAveragePooling1D())
-    model_m.add(Dropout(0.5))
-    model_m.add(Dense(1, activation='sigmoid')) #binary hence only 2 classes
-    # print(model_m.summary())
-
-    print("\n--- Fit the model ---\n")
-    # Split data while keeping person segments together
-    x_train, x_val, y_train, y_val, person_ids_train, person_ids_val = train_test_split(
-        x_data, y_data, person_ids, test_size=0.2, stratify=person_ids
-    )
-
-    callbacks_list = [
-        keras.callbacks.ModelCheckpoint(
-            filepath='best_model.{epoch:02d}-{val_accuracy:.4f}.tf',
-            monitor='val_accuracy',
-            save_best_only=True,
-            mode='max'
-        ),
-        keras.callbacks.EarlyStopping(monitor='accuracy', patience=4)
-    ]
-
-    # Create the PersonLevelEvaluation callback with validation data
-    person_level_callback = PersonLevelEvaluation(validation_data=(x_val, y_val), 
-                                                  person_ids=person_ids_val, 
-                                                  threshold=threshold)
-
-    # Add the callback to your list of callbacks
-    callbacks_list.append(person_level_callback)
-
-    model_m.compile(loss=tf.keras.losses.BinaryCrossentropy(), optimizer='adam', metrics=['accuracy'])
-
-    # Train your model without specifying validation_data in model.fit()
-    model_m.fit(x_train, 
-                y_train,
-                batch_size=BATCH_SIZE,
-                epochs=EPOCHS,
-                validation_data=(x_val, y_val), 
-                callbacks=callbacks_list, 
-                verbose=1)
-
-    print("\n--- Evaluate Model on Training Data ---\n")
-    train_loss, train_accuracy = model_m.evaluate(x_train, y_train, verbose=1)
-    print(f"Segment-level on training data - Loss: {train_loss}, Accuracy: {train_accuracy}")
-
-    print("\n--- Person-Level Evaluation on Training Data ---\n")
-    training_segment_predictions = model_m.predict(x_train)
-    person_level_evaluator = PersonLevelEvaluation(validation_data=None, person_ids=None, threshold=threshold)
-
-    aggregated_train_preds, aggregated_train_labels = person_level_evaluator.aggregate_predictions(
-        training_segment_predictions, y_train, person_ids_train, threshold
-    )
-    person_level_train_accuracy = accuracy_score(aggregated_train_labels, aggregated_train_preds)
-    print(f"Person-level on training data - Accuracy: {person_level_train_accuracy:.4f}")
+def load_and_evaluate(df_train, df_test, threshold):
+    model_path = 'best_model.43-0.8513.tf'
+    model_m = keras.models.load_model(model_path)
 
     print("\n--- Check against test data ---\n")
     x_test, y_test, test_person_ids = create_segments(df_test, TIME_PERIODS, STEP_DISTANCE)
@@ -305,6 +237,7 @@ def split_and_evaluate(df):
     print(f"Best person-level accuracy: {best_accuracy}")
     print(f"Best split: Training sets {best_split[0]}, Testing sets {best_split[1]}")
 
+
 # %%
 # ------- THE PROGRAM TO LOAD DATA AND TRAIN THE MODEL -------
 # Set some standard parameters upfront
@@ -332,14 +265,14 @@ df = read_data('data.csv')
 # show_basic_dataframe_info(df, 20)
 
 """ ################ Plotting ###########################
-ax = df['activity'].value_counts().plot(kind='bar', title='Data Samples by Participant Diagnosis', color='grey')
+ax = df['activity'].value_counts().plot(kind='bar', title='Data Samples by Participant Diagnosis')
 ax.set_xlabel('')
 ax.set_xticks(ticks=[0, 1])
 ax.set_xticklabels(labels=["Neurotypical", "Dysgraphia"], fontsize=12, rotation=0)
 ax.get_yaxis().get_major_formatter().set_scientific(False)
 plt.show()
 
-ax = df['user-id'].value_counts().plot(kind='bar', title='Data Samples Per Participant', color='grey')
+ax = df['user-id'].value_counts().plot(kind='bar', title='Data Samples Per Participant')
 ax.set_xticklabels([])
 ax.set_xlabel('Participants')
 ax.set_ylabel('Samples')
@@ -376,10 +309,11 @@ test_user_ids = [90,  70, 176,  69,  50, 159,  66, 187, 191,  57,  79,  76,  62,
 df_train = df[df['user-id'].isin(train_user_ids)]
 df_test = df[df['user-id'].isin(test_user_ids)]
 
-# Train the model and evaluate
-# person_level_accuracy = train_and_evaluate(df_train, df_test, 0.5)
+# Load the model and evaluate
+for threshold in np.arange(0.40, 0.60, 0.05):
+    person_level_accuracy = load_and_evaluate(df_train, df_test, threshold)
 
 # for BATCH_SIZE in [64, 128, 400]:
-for i in range(100):
-    person_level_accuracy = train_and_evaluate(df_train, df_test, 0.5)
-    print(f"Total 100 Run {i} - Person-level accuracy: {person_level_accuracy}")
+#     for i in range(10):
+#         person_level_accuracy = train_and_evaluate(df_train, df_test, 0.5)
+#         print(f"BATCH_SIZE {BATCH_SIZE} Run {i} - Person-level accuracy: {person_level_accuracy}")
